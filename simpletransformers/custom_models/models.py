@@ -8,22 +8,34 @@ from transformers import (
     ElectraForMaskedLM,
     ElectraForPreTraining,
     FlaubertModel,
+    LayoutLMModel,
+    LayoutLMPreTrainedModel,
     LongformerModel,
+    RemBertModel,
+    RemBertPreTrainedModel,
     RobertaModel,
     XLMModel,
     XLMPreTrainedModel,
     XLNetModel,
     XLNetPreTrainedModel,
 )
-from transformers.models.camembert.configuration_camembert import CamembertConfig
-from transformers.models.distilbert.configuration_distilbert import DistilBertConfig
-from transformers.models.roberta.configuration_roberta import RobertaConfig
-from transformers.models.xlm_roberta.configuration_xlm_roberta import XLMRobertaConfig
+from transformers.modeling_utils import PreTrainedModel, SequenceSummary
 from transformers.models.albert.modeling_albert import (
     AlbertConfig,
     AlbertModel,
     AlbertPreTrainedModel,
 )
+from transformers.models.big_bird.configuration_big_bird import BigBirdConfig
+from transformers.models.big_bird.modeling_big_bird import (
+    BigBirdClassificationHead,
+    BigBirdModel,
+    BigBirdPreTrainedModel,
+)
+from transformers.models.camembert.configuration_camembert import CamembertConfig
+from transformers.models.camembert.modeling_camembert import (
+    CAMEMBERT_PRETRAINED_MODEL_ARCHIVE_LIST,
+)
+from transformers.models.distilbert.configuration_distilbert import DistilBertConfig
 from transformers.models.distilbert.modeling_distilbert import (
     DISTILBERT_PRETRAINED_MODEL_ARCHIVE_LIST,
 )
@@ -33,21 +45,25 @@ from transformers.models.electra.modeling_electra import (
     ElectraModel,
     ElectraPreTrainedModel,
 )
-from transformers.models.camembert.modeling_camembert import (
-    CAMEMBERT_PRETRAINED_MODEL_ARCHIVE_LIST,
+from transformers.models.longformer.modeling_longformer import (
+    LongformerClassificationHead,
+    LongformerPreTrainedModel,
 )
+from transformers.models.nystromformer.modeling_nystromformer import (
+    NystromformerClassificationHead,
+    NystromformerModel,
+    NystromformerPreTrainedModel,
+)
+from transformers.models.rembert.configuration_rembert import RemBertConfig
+from transformers.models.roberta.configuration_roberta import RobertaConfig
 from transformers.models.roberta.modeling_roberta import (
     ROBERTA_PRETRAINED_MODEL_ARCHIVE_LIST,
     RobertaClassificationHead,
     RobertaForQuestionAnswering,
 )
-from transformers.modeling_utils import PreTrainedModel, SequenceSummary
+from transformers.models.xlm_roberta.configuration_xlm_roberta import XLMRobertaConfig
 from transformers.models.xlm_roberta.modeling_xlm_roberta import (
     XLM_ROBERTA_PRETRAINED_MODEL_ARCHIVE_LIST,
-)
-from transformers.models.longformer.modeling_longformer import (
-    LongformerClassificationHead,
-    LongformerPreTrainedModel,
 )
 
 
@@ -76,6 +92,112 @@ class BertForMultiLabelSequenceClassification(BertPreTrainedModel):
         labels=None,
     ):
         outputs = self.bert(
+            input_ids,
+            attention_mask=attention_mask,
+            token_type_ids=token_type_ids,
+            position_ids=position_ids,
+            head_mask=head_mask,
+        )
+
+        pooled_output = outputs[1]
+
+        pooled_output = self.dropout(pooled_output)
+        logits = self.classifier(pooled_output)
+
+        outputs = (logits,) + outputs[
+            2:
+        ]  # add hidden states and attention if they are here
+
+        if labels is not None:
+            loss_fct = BCEWithLogitsLoss(pos_weight=self.pos_weight)
+            labels = labels.float()
+            loss = loss_fct(
+                logits.view(-1, self.num_labels), labels.view(-1, self.num_labels)
+            )
+            outputs = (loss,) + outputs
+
+        return outputs  # (loss), logits, (hidden_states), (attentions)
+
+
+class LayoutLMForMultiLabelSequenceClassification(LayoutLMPreTrainedModel):
+    """
+    LayoutLMv1 model adapted for multi-label sequence classification
+    """
+
+    def __init__(self, config, pos_weight=None):
+        super(LayoutLMForMultiLabelSequenceClassification, self).__init__(config)
+        self.num_labels = config.num_labels
+        self.layoutlm = LayoutLMModel(config)
+        self.dropout = nn.Dropout(config.hidden_dropout_prob)
+        self.classifier = nn.Linear(config.hidden_size, self.config.num_labels)
+        self.pos_weight = pos_weight
+
+        self.init_weights()
+
+    def forward(
+        self,
+        input_ids,
+        bbox=None,
+        attention_mask=None,
+        token_type_ids=None,
+        position_ids=None,
+        head_mask=None,
+        labels=None,
+    ):
+        outputs = self.layoutlm(
+            input_ids=input_ids,
+            bbox=bbox,
+            attention_mask=attention_mask,
+            token_type_ids=token_type_ids,
+            position_ids=position_ids,
+            head_mask=head_mask,
+        )
+
+        pooled_output = outputs[1]
+
+        pooled_output = self.dropout(pooled_output)
+        logits = self.classifier(pooled_output)
+
+        outputs = (logits,) + outputs[
+            2:
+        ]  # add hidden states and attention if they are here
+
+        if labels is not None:
+            loss_fct = BCEWithLogitsLoss(pos_weight=self.pos_weight)
+            labels = labels.float()
+            loss = loss_fct(
+                logits.view(-1, self.num_labels), labels.view(-1, self.num_labels)
+            )
+            outputs = (loss,) + outputs
+
+        return outputs  # (loss), logits, (hidden_states), (attentions)
+
+
+class RemBertForMultiLabelSequenceClassification(RemBertPreTrainedModel):
+    """
+    Bert model adapted for multi-label sequence classification
+    """
+
+    def __init__(self, config, pos_weight=None):
+        super(RemBertForMultiLabelSequenceClassification, self).__init__(config)
+        self.num_labels = config.num_labels
+        self.rembert = RemBertModel(config)
+        self.dropout = nn.Dropout(config.hidden_dropout_prob)
+        self.classifier = nn.Linear(config.hidden_size, self.config.num_labels)
+        self.pos_weight = pos_weight
+
+        self.init_weights()
+
+    def forward(
+        self,
+        input_ids,
+        attention_mask=None,
+        token_type_ids=None,
+        position_ids=None,
+        head_mask=None,
+        labels=None,
+    ):
+        outputs = self.rembert(
             input_ids,
             attention_mask=attention_mask,
             token_type_ids=token_type_ids,
@@ -797,7 +919,10 @@ class ElectraForQuestionAnswering(ElectraPreTrainedModel):
         start_logits = start_logits.squeeze(-1)
         end_logits = end_logits.squeeze(-1)
 
-        outputs = (start_logits, end_logits,) + outputs[2:]
+        outputs = (
+            start_logits,
+            end_logits,
+        ) + outputs[2:]
         if start_positions is not None and end_positions is not None:
             # If we are on multi-GPU, split add a dimension
             if len(start_positions.size()) > 1:
@@ -823,3 +948,116 @@ class ElectraForQuestionAnswering(ElectraPreTrainedModel):
 class XLMRobertaForQuestionAnswering(RobertaForQuestionAnswering):
     config_class = XLMRobertaConfig
     pretrained_model_archive_map = XLM_ROBERTA_PRETRAINED_MODEL_ARCHIVE_LIST
+
+
+class BigBirdForMultiLabelSequenceClassification(BigBirdPreTrainedModel):
+    """
+    Bert model adapted for multi-label sequence classification
+    """
+
+    def __init__(self, config, pos_weight=None):
+        super(BigBirdForMultiLabelSequenceClassification, self).__init__(config)
+        self.num_labels = config.num_labels
+        self.config = config
+        self.bert = BigBirdModel(config)
+        self.classifier = BigBirdClassificationHead(config)
+        self.pos_weight = pos_weight
+
+        self.init_weights()
+
+    def forward(
+        self,
+        input_ids,
+        attention_mask=None,
+        token_type_ids=None,
+        position_ids=None,
+        head_mask=None,
+        labels=None,
+    ):
+        outputs = self.bert(
+            input_ids,
+            attention_mask=attention_mask,
+            token_type_ids=token_type_ids,
+            position_ids=position_ids,
+            head_mask=head_mask,
+        )
+
+        sequence_output = outputs[0]
+        logits = self.classifier(sequence_output)
+
+        outputs = (logits,) + outputs[
+            2:
+        ]  # add hidden states and attention if they are here
+
+        if labels is not None:
+            loss_fct = BCEWithLogitsLoss(pos_weight=self.pos_weight)
+            labels = labels.float()
+            loss = loss_fct(
+                logits.view(-1, self.num_labels), labels.view(-1, self.num_labels)
+            )
+            outputs = (loss,) + outputs
+
+        return outputs  # (loss), logits, (hidden_states), (attentions)
+
+
+class NystromformerForMultiLabelSequenceClassification(NystromformerPreTrainedModel):
+    """
+    Bert model adapted for multi-label sequence classification
+    """
+
+    def __init__(self, config, pos_weight=None):
+        super(NystromformerForMultiLabelSequenceClassification, self).__init__(config)
+        self.num_labels = config.num_labels
+        self.config = config
+        self.bert = NystromformerModel(config)
+        self.classifier = NystromformerClassificationHead(config)
+        self.pos_weight = pos_weight
+
+        self.init_weights()
+
+    def forward(
+        self,
+        input_ids,
+        attention_mask=None,
+        token_type_ids=None,
+        position_ids=None,
+        head_mask=None,
+        labels=None,
+    ):
+        outputs = self.bert(
+            input_ids,
+            attention_mask=attention_mask,
+            token_type_ids=token_type_ids,
+            position_ids=position_ids,
+            head_mask=head_mask,
+        )
+
+        sequence_output = outputs[0]
+        logits = self.classifier(sequence_output)
+
+        outputs = (logits,) + outputs[
+            2:
+        ]  # add hidden states and attention if they are here
+
+        if labels is not None:
+            loss_fct = BCEWithLogitsLoss(pos_weight=self.pos_weight)
+            labels = labels.float()
+            loss = loss_fct(
+                logits.view(-1, self.num_labels), labels.view(-1, self.num_labels)
+            )
+            outputs = (loss,) + outputs
+
+        return outputs  # (loss), logits, (hidden_states), (attentions)
+
+
+class DualEncoderModel(PreTrainedModel):
+    def __init__(
+        self,
+        context_encoder,
+        question_encoder,
+        context_config,
+        question_config,
+    ):
+        super().__init__(
+            config=context_config
+        )  # Initialize with context_config for now

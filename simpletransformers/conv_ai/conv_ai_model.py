@@ -28,7 +28,7 @@ from sklearn.metrics import (
     matthews_corrcoef,
     mean_squared_error,
 )
-from tensorboardX import SummaryWriter
+from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import DataLoader, RandomSampler, SequentialSampler, TensorDataset
 from torch.utils.data.distributed import DistributedSampler
 from tqdm.auto import tqdm, trange
@@ -40,7 +40,8 @@ from transformers.optimization import (
     get_cosine_with_hard_restarts_schedule_with_warmup,
     get_polynomial_decay_schedule_with_warmup,
 )
-from transformers.optimization import AdamW, Adafactor
+from torch.optim import AdamW
+from transformers.optimization import Adafactor
 from transformers import (
     WEIGHTS_NAME,
     GPT2Config,
@@ -265,7 +266,10 @@ class ConvAIModel:
 
         if self.args.evaluate_during_training:
             eval_loader, eval_sampler = self.load_and_cache_examples(
-                verbose=verbose, evaluate=True
+                dataset_path=eval_file,
+                verbose=verbose,
+                evaluate=True,
+                no_cache=self.args.no_cache or self.args.reprocess_input_data,
             )
         else:
             eval_loader = None
@@ -309,7 +313,7 @@ class ConvAIModel:
         model = self.model
         args = self.args
 
-        tb_writer = SummaryWriter(logdir=args.tensorboard_dir)
+        tb_writer = SummaryWriter(log_dir=args.tensorboard_dir)
 
         t_total = (
             len(train_dataloader)
@@ -385,6 +389,7 @@ class ConvAIModel:
                 optimizer_grouped_parameters,
                 lr=args.learning_rate,
                 eps=args.adam_epsilon,
+                betas=args.adam_betas,
             )
         elif args.optimizer == "Adafactor":
             optimizer = Adafactor(
@@ -399,7 +404,7 @@ class ConvAIModel:
                 relative_step=args.adafactor_relative_step,
                 warmup_init=args.adafactor_warmup_init,
             )
-            print("Using Adafactor for T5")
+
         else:
             raise ValueError(
                 "{} is not a valid optimizer class. Please use one of ('AdamW', 'Adafactor') instead.".format(
@@ -470,10 +475,12 @@ class ConvAIModel:
         if args.wandb_project:
             wandb.init(
                 project=args.wandb_project,
-                config={**asdict(args), "repo": "simpletransformers"},
+                config={**asdict(args)},
                 **args.wandb_kwargs,
             )
+            wandb.run._label(repo="simpletransformers")
             wandb.watch(self.model)
+            self.wandb_run_id = wandb.run.id
 
         if args.fp16:
             from torch.cuda import amp
@@ -597,9 +604,12 @@ class ConvAIModel:
                             **kwargs,
                         )
                         for key, value in results.items():
-                            tb_writer.add_scalar(
-                                "eval_{}".format(key), value, global_step
-                            )
+                            try:
+                                tb_writer.add_scalar(
+                                    "eval_{}".format(key), value, global_step
+                                )
+                            except (NotImplementedError, AssertionError):
+                                pass
 
                         output_dir_current = os.path.join(
                             output_dir, "checkpoint-{}".format(global_step)

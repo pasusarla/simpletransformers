@@ -19,7 +19,7 @@ from sklearn.metrics import (
     matthews_corrcoef,
     mean_squared_error,
 )
-from tensorboardX import SummaryWriter
+from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import DataLoader, RandomSampler, SequentialSampler, TensorDataset
 from torch.utils.data.distributed import DistributedSampler
 from tqdm.auto import tqdm, trange
@@ -31,7 +31,8 @@ from transformers.optimization import (
     get_cosine_with_hard_restarts_schedule_with_warmup,
     get_polynomial_decay_schedule_with_warmup,
 )
-from transformers.optimization import AdamW, Adafactor
+from torch.optim import AdamW
+from transformers.optimization import Adafactor
 from transformers import (
     AlbertConfig,
     AlbertForQuestionAnswering,
@@ -132,7 +133,7 @@ class QuestionAnsweringModel:
 
         MODEL_CLASSES = {
             "albert": (AlbertConfig, AlbertForQuestionAnswering, AlbertTokenizer),
-            "auto": (AutoConfig, AutoTokenizer, AutoModelForQuestionAnswering),
+            "auto": (AutoConfig, AutoModelForQuestionAnswering, AutoTokenizer),
             "bart": (BartConfig, BartForQuestionAnswering, BartTokenizer),
             "bert": (BertConfig, BertForQuestionAnswering, BertTokenizer),
             "camembert": (
@@ -260,6 +261,7 @@ class QuestionAnsweringModel:
         self.args.model_name = model_name
         self.args.model_type = model_type
 
+        self.wandb_run_id = None
         if self.args.wandb_project and not wandb_available:
             warnings.warn(
                 "wandb_project specified but wandb is not available. Wandb disabled."
@@ -484,7 +486,7 @@ class QuestionAnsweringModel:
         model = self.model
         args = self.args
 
-        tb_writer = SummaryWriter(logdir=args.tensorboard_dir)
+        tb_writer = SummaryWriter(log_dir=args.tensorboard_dir)
         train_sampler = RandomSampler(train_dataset)
         train_dataloader = DataLoader(
             train_dataset,
@@ -567,6 +569,7 @@ class QuestionAnsweringModel:
                 optimizer_grouped_parameters,
                 lr=args.learning_rate,
                 eps=args.adam_epsilon,
+                betas=args.adam_betas,
             )
         elif args.optimizer == "Adafactor":
             optimizer = Adafactor(
@@ -581,7 +584,7 @@ class QuestionAnsweringModel:
                 relative_step=args.adafactor_relative_step,
                 warmup_init=args.adafactor_warmup_init,
             )
-            print("Using Adafactor for T5")
+
         else:
             raise ValueError(
                 "{} is not a valid optimizer class. Please use one of ('AdamW', 'Adafactor') instead.".format(
@@ -650,7 +653,7 @@ class QuestionAnsweringModel:
 
         if args.model_name and os.path.exists(args.model_name):
             try:
-                # set global_step to gobal_step of last saved checkpoint from model path
+                # set global_step to global_step of last saved checkpoint from model path
                 checkpoint_suffix = args.model_name.split("/")[-1].split("-")
                 if len(checkpoint_suffix) > 2:
                     checkpoint_suffix = checkpoint_suffix[1]
@@ -682,10 +685,12 @@ class QuestionAnsweringModel:
         if args.wandb_project:
             wandb.init(
                 project=args.wandb_project,
-                config={**asdict(args), "repo": "simpletransformers"},
+                config={**asdict(args)},
                 **args.wandb_kwargs,
             )
+            wandb.run._label(repo="simpletransformers")
             wandb.watch(self.model)
+            self.wandb_run_id = wandb.run.id
 
         if args.fp16:
             from torch.cuda import amp
@@ -797,9 +802,12 @@ class QuestionAnsweringModel:
                         # Only evaluate when single GPU otherwise metrics may not average well
                         results, _ = self.eval_model(eval_data, verbose=False, **kwargs)
                         for key, value in results.items():
-                            tb_writer.add_scalar(
-                                "eval_{}".format(key), value, global_step
-                            )
+                            try:
+                                tb_writer.add_scalar(
+                                    "eval_{}".format(key), value, global_step
+                                )
+                            except (NotImplementedError, AssertionError):
+                                pass
 
                         output_dir_current = os.path.join(
                             output_dir, "checkpoint-{}".format(global_step)

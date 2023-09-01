@@ -2,7 +2,7 @@
 title: NER Model
 permalink: /docs/ner-model/
 excerpt: "NERModel for named entity recognition."
-last_modified_at: 2020/12/29 17:01:21
+last_modified_at: 2021/10/02 12:54:24
 toc: true
 ---
 
@@ -67,7 +67,7 @@ model = NERModel(
 
 ## `Class NERModel`
 
-> *simpletransformers.ner.NERModel*{: .function-name}(self, model_type, model_name, labels=None, args=None, use_cuda=True, cuda_device=-1, **kwargs,)
+> *simpletransformers.ner.NERModel*{: .function-name}(self, model_type, model_name, labels=None, weight=None, args=None, use_cuda=True, cuda_device=-1, onnx_execution_provider=None, **kwargs,)
 
 Initializes a NERModel model.
 {: .function-text}
@@ -81,11 +81,15 @@ Initializes a NERModel model.
 
 * **labels** *(`int`, optional)* - A list of all Named Entity labels.  If not given, ["O", "B-MISC", "I-MISC",  "B-PER", "I-PER", "B-ORG", "I-ORG", "B-LOC", "I-LOC"] will be used. (See [here](/docs/ner-specifics/#custom-labels))
 
+* **weight** *(`list`, optional)* - A `torch.Tensor`, `numpy.ndarray` or list.  The weight to be applied to each class when computing the loss of the model.
+
 * **args** *(`dict`, optional)* - [Default args](/docs/usage/#configuring-a-simple-transformers-model) will be used if this parameter is not provided. If provided, it should be a dict containing the args that should be changed in the default args.
 
 * **use_cuda** *(`bool`, optional)* - Use GPU if available. Setting to False will force model to use CPU only. (See [here](/docs/usage/#to-cuda-or-not-to-cuda))
 
 * **cuda_device** *(`int`, optional)* - Specific GPU that should be used. Will use the first available GPU by default. (See [here](/docs/usage/#selecting-a-cuda-device))
+
+* **onnx_execution_provider** *(`str`, optional)* - The execution provider to use for ONNX export.
 
 * **kwargs** *(optional)* - For providing proxies, force_download, resume_download, cache_dir and other options specific to the 'from_pretrained' implementation where this will be supplied. (See [here](/docs/usage/#options-for-downloading-pre-trained-models))
 {: .parameter-list}
@@ -123,7 +127,7 @@ Trains the model using 'train_data'
 
 * **eval_data** *(optional)* - Evaluation data (same format as train_data) against which evaluation will be performed when evaluate_during_training is enabled. Is required if evaluate_during_training is enabled.
 
-* **kwargs** *(optional)* - Additional metrics that should be calculated. Pass in the metrics as keyword arguments *(name of metric: function to calculate metric)*. Refer to the [additional metrics](/docs/usage/#additional-evaluation-metrics) section.
+* **kwargs** *(optional)* - Additional metrics that should be calculated. Pass in the metrics as keyword arguments *(name of metric: function to calculate metric)*. Refer to the [additional metrics](/docs/tips-and-tricks/#additional-evaluation-metrics) section.
 E.g. `f1=sklearn.metrics.f1_score`.
 A metric function should take in two parameters. The first parameter will be the true labels, and the second parameter will be the predictions.
 {: .parameter-list}
@@ -171,7 +175,7 @@ Evaluates the model using 'eval_data'
 
 * **silent** *(`bool`, optional)* - If silent, tqdm progress bars will be hidden.
 
-* **kwargs** *(optional)* - Additional metrics that should be calculated. Pass in the metrics as keyword arguments *(name of metric: function to calculate metric)*. Refer to the [additional metrics](/docs/usage/#additional-evaluation-metrics) section.
+* **kwargs** *(optional)* - Additional metrics that should be calculated. Pass in the metrics as keyword arguments *(name of metric: function to calculate metric)*. Refer to the [additional metrics](/docs/tips-and-tricks/#additional-evaluation-metrics) section.
 E.g. `f1=sklearn.metrics.f1_score`.
 A metric function should take in two parameters. The first parameter will be the true labels, and the second parameter will be the predictions.
 {: .parameter-list}

@@ -23,8 +23,12 @@ from sklearn.metrics import (
     matthews_corrcoef,
     mean_squared_error,
 )
-from tensorboardX import SummaryWriter
+from torch.utils.tensorboard import SummaryWriter
 from tokenizers import BertWordPieceTokenizer, ByteLevelBPETokenizer
+from tokenizers.implementations import (
+    SentencePieceBPETokenizer,
+    SentencePieceUnigramTokenizer,
+)
 from tokenizers.processors import BertProcessing
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader, Dataset, RandomSampler, SequentialSampler
@@ -38,7 +42,19 @@ from transformers.optimization import (
     get_cosine_with_hard_restarts_schedule_with_warmup,
     get_polynomial_decay_schedule_with_warmup,
 )
-from transformers.optimization import AdamW, Adafactor
+from torch.optim import AdamW
+from transformers.optimization import Adafactor
+
+from transformers import DummyObject, requires_backends
+
+
+class NystromformerTokenizer(metaclass=DummyObject):
+    _backends = ["sentencepiece"]
+
+    def __init__(self, *args, **kwargs):
+        requires_backends(self, ["sentencepiece"])
+
+
 from transformers import (
     WEIGHTS_NAME,
     AutoConfig,
@@ -47,6 +63,9 @@ from transformers import (
     BertConfig,
     BertForMaskedLM,
     BertTokenizer,
+    BigBirdConfig,
+    BigBirdForMaskedLM,
+    BigBirdTokenizer,
     CamembertConfig,
     CamembertForMaskedLM,
     CamembertTokenizer,
@@ -63,14 +82,23 @@ from transformers import (
     LongformerConfig,
     LongformerForMaskedLM,
     LongformerTokenizer,
+    NystromformerConfig,
+    NystromformerForMaskedLM,
+    # NystromformerTokenizer,
     OpenAIGPTConfig,
     OpenAIGPTLMHeadModel,
     OpenAIGPTTokenizer,
     PreTrainedModel,
     PreTrainedTokenizer,
+    RemBertConfig,
+    RemBertForMaskedLM,
+    RemBertTokenizer,
     RobertaConfig,
     RobertaForMaskedLM,
     RobertaTokenizer,
+    XLMRobertaConfig,
+    XLMRobertaForMaskedLM,
+    XLMRobertaTokenizer,
 )
 from transformers.data.datasets.language_modeling import (
     LineByLineTextDataset,
@@ -99,13 +127,17 @@ logger = logging.getLogger(__name__)
 MODEL_CLASSES = {
     "auto": (AutoConfig, AutoModelWithLMHead, AutoTokenizer),
     "bert": (BertConfig, BertForMaskedLM, BertTokenizer),
+    "bigbird": (BigBirdConfig, BigBirdForMaskedLM, BigBirdTokenizer),
     "camembert": (CamembertConfig, CamembertForMaskedLM, CamembertTokenizer),
     "distilbert": (DistilBertConfig, DistilBertForMaskedLM, DistilBertTokenizer),
     "electra": (ElectraConfig, ElectraForLanguageModelingModel, ElectraTokenizer),
     "gpt2": (GPT2Config, GPT2LMHeadModel, GPT2Tokenizer),
     "longformer": (LongformerConfig, LongformerForMaskedLM, LongformerTokenizer),
+    "nystromformer": (NystromformerConfig, NystromformerForMaskedLM, BigBirdTokenizer),
     "openai-gpt": (OpenAIGPTConfig, OpenAIGPTLMHeadModel, OpenAIGPTTokenizer),
+    "rembert": (RemBertConfig, RemBertForMaskedLM, RemBertTokenizer),
     "roberta": (RobertaConfig, RobertaForMaskedLM, RobertaTokenizer),
+    "xlmroberta": (XLMRobertaConfig, XLMRobertaForMaskedLM, XLMRobertaTokenizer),
 }
 
 
@@ -236,7 +268,8 @@ class LanguageModelingModel:
                 self.generator_config = ElectraConfig.from_pretrained(generator_name)
             elif self.args.model_name:
                 self.generator_config = ElectraConfig.from_pretrained(
-                    os.path.join(self.args.model_name, "generator_config"), **kwargs,
+                    os.path.join(self.args.model_name, "generator_config"),
+                    **kwargs,
                 )
             else:
                 self.generator_config = ElectraConfig(
@@ -482,7 +515,7 @@ class LanguageModelingModel:
             )
 
         if self.is_world_master():
-            tb_writer = SummaryWriter(logdir=args.tensorboard_dir)
+            tb_writer = SummaryWriter(log_dir=args.tensorboard_dir)
         train_sampler = (
             RandomSampler(train_dataset)
             if args.local_rank == -1
@@ -583,6 +616,7 @@ class LanguageModelingModel:
                 optimizer_grouped_parameters,
                 lr=args.learning_rate,
                 eps=args.adam_epsilon,
+                betas=args.adam_betas,
             )
         elif args.optimizer == "Adafactor":
             optimizer = Adafactor(
@@ -597,7 +631,7 @@ class LanguageModelingModel:
                 relative_step=args.adafactor_relative_step,
                 warmup_init=args.adafactor_warmup_init,
             )
-            print("Using Adafactor for T5")
+
         else:
             raise ValueError(
                 "{} is not a valid optimizer class. Please use one of ('AdamW', 'Adafactor') instead.".format(
@@ -721,11 +755,11 @@ class LanguageModelingModel:
 
         if args.wandb_project:
             wandb.init(
-                project=args.wandb_project,
-                config={**asdict(args), "repo": "simpletransformers"},
-                **args.wandb_kwargs,
+                project=args.wandb_project, config={**asdict(args)}, **args.wandb_kwargs
             )
+            wandb.run._label(repo="simpletransformers")
             wandb.watch(self.model)
+            self.wandb_run_id = wandb.run.id
 
         if args.fp16:
             from torch.cuda import amp
@@ -886,9 +920,12 @@ class LanguageModelingModel:
 
                         if self.is_world_master():
                             for key, value in results.items():
-                                tb_writer.add_scalar(
-                                    "eval_{}".format(key), value, global_step
-                                )
+                                try:
+                                    tb_writer.add_scalar(
+                                        "eval_{}".format(key), value, global_step
+                                    )
+                                except (NotImplementedError, AssertionError):
+                                    pass
 
                         output_dir_current = os.path.join(
                             output_dir, "checkpoint-{}".format(global_step)
@@ -1334,10 +1371,11 @@ class LanguageModelingModel:
                     if bool(args.model_type in ["roberta", "camembert", "xlmroberta"])
                     else 2
                 )
-                if (
-                    self.args.max_seq_length > 509
-                    and self.args.model_type != "longformer"
-                ):
+                if self.args.max_seq_length > 509 and self.args.model_type not in [
+                    "longformer",
+                    "bigbird",
+                    "nystromformer",
+                ]:
                     self.args.max_seq_length = (
                         509
                         if bool(
@@ -1415,6 +1453,55 @@ class LanguageModelingModel:
                 special_tokens=self.args.special_tokens,
                 wordpieces_prefix="##",
             )
+        elif self.args.model_type in ["bigbird", "xlmroberta", "nystromformer"]:
+            # The google BigBird way
+            # Tokenizers sentencepiece does not build a BigBird compatible vocabulary model
+            import sentencepiece as spm
+            import shutil
+
+            os.makedirs(output_dir, exist_ok=True)
+            files = ",".join(train_files)
+
+            if self.args.model_type in ["xlmroberta"]:
+                # </s>,<s>,<unk>,<pad> are built in -- leave as default
+                # XLMRoberta uses sentencepiece.bpe as a vocab model prefix
+                prefix = "sentencepiece.bpe"
+                self.args.special_tokens = [
+                    "<s>",
+                    "</s>",
+                    "<pad>",
+                    "<mask>",
+                    "<s>NOTUSED",
+                    "</s>NOTUSED",
+                ]
+                spm.SentencePieceTrainer.Train(
+                    f"--input={files} --user_defined_symbols=<pad>,<mask>,<s>NOTUSED,</s>NOTUSED --model_type=bpe --model_prefix={prefix} --vocab_size={self.args.vocab_size - 2} --shuffle_input_sentence=true --max_sentence_length=10000"
+                )
+            else:
+                # </s>,<s>,<unk>,<pad> are built in -- leave as default
+                # BigBird uses spiece as a vocab model prefix
+                # Nystromformer uses spiece as a vocab model prefix
+                prefix = "spiece"
+                self.args.special_tokens = [
+                    "<s>",
+                    "</s>",
+                    "<pad>",
+                    "[SEP]",
+                    "[CLS]",
+                    "[MASK]",
+                ]
+                spm.SentencePieceTrainer.Train(
+                    f"--input={files} --user_defined_symbols=<pad>,[SEP],[CLS],[MASK] --model_type=bpe --model_prefix=spiece --vocab_size={self.args.vocab_size} --shuffle_input_sentence=true --max_sentence_length=10000"
+                )
+
+            # SentencePiece There is no option for output path https://github.com/google/sentencepiece/blob/master/doc/options.md
+            if os.path.exists(output_dir + "/" + f"{prefix}.model"):
+                os.remove(output_dir + "/" + f"{prefix}.model")
+            shutil.move(src=f"{prefix}.model", dst=output_dir)
+
+            if os.path.exists(output_dir + "/" + f"{prefix}.vocab"):
+                os.remove(output_dir + "/" + f"{prefix}.vocab")
+            shutil.move(src=f"{prefix}.vocab", dst=output_dir)
         else:
             tokenizer = ByteLevelBPETokenizer(lowercase=self.args.do_lower_case)
 
@@ -1425,14 +1512,15 @@ class LanguageModelingModel:
                 special_tokens=self.args.special_tokens,
             )
 
-        os.makedirs(output_dir, exist_ok=True)
+        if self.args.model_type not in ["bigbird", "xlmroberta", "nystromformer"]:
+            os.makedirs(output_dir, exist_ok=True)
 
-        tokenizer.save_model(output_dir)
-        logger.info(
-            " Training of {} tokenizer complete. Saved to {}.".format(
-                tokenizer_name, output_dir
+            tokenizer.save_model(output_dir)
+            logger.info(
+                " Training of {} tokenizer complete. Saved to {}.".format(
+                    tokenizer_name, output_dir
+                )
             )
-        )
 
         _, _, tokenizer_class = MODEL_CLASSES[self.args.model_type]
         tokenizer = tokenizer_class.from_pretrained(output_dir)
@@ -1459,6 +1547,7 @@ class LanguageModelingModel:
                 model_to_resize = (
                     self.model.module if hasattr(self.model, "module") else self.model
                 )
+
                 model_to_resize.resize_token_embeddings(len(self.tokenizer))
             except AttributeError:
                 pass

@@ -27,8 +27,10 @@ from transformers import (
 logger = logging.getLogger(__name__)
 
 if transformers.__version__ < "4.2.0":
-    shift_tokens_right = lambda input_ids, pad_token_id, decoder_start_token_id: _shift_tokens_right(
-        input_ids, pad_token_id
+    shift_tokens_right = (
+        lambda input_ids, pad_token_id, decoder_start_token_id: _shift_tokens_right(
+            input_ids, pad_token_id
+        )
     )
 else:
     shift_tokens_right = _shift_tokens_right
@@ -48,7 +50,7 @@ def preprocess_batch_for_hf_dataset(
 
         target_ids = encoder_tokenizer.batch_encode_plus(
             dataset["target_text"],
-            max_length=args.max_seq_length,
+            max_length=args.max_length,
             padding="max_length",
             return_tensors="np",
             truncation=True,
@@ -66,6 +68,7 @@ def preprocess_batch_for_hf_dataset(
             src_lang=args.src_lang,
             tgt_lang=args.tgt_lang,
             max_length=args.max_seq_length,
+            max_target_length=args.max_length,
             padding="max_length",  # pad_to_max_length=True won't work in this case
             return_tensors="np",
             truncation=True,
@@ -98,12 +101,13 @@ def preprocess_batch_for_hf_dataset(
         try:
             target_inputs = encoder_tokenizer.generator(
                 dataset["target_text"],
-                max_length=args.max_seq_length,
+                max_length=args.max_length,
                 padding="max_length",
                 return_tensors="np",
                 truncation=True,
             )
-        except TypeError:
+        except (TypeError, ValueError) as e:
+            logger.warn(e)
             logger.warn(
                 """Error encountered while converting target_text.
             All target_text values have been manually cast to String as a workaround.
@@ -112,7 +116,7 @@ def preprocess_batch_for_hf_dataset(
             dataset["target_text"] = [str(d) for d in dataset["target_text"]]
             target_inputs = encoder_tokenizer.generator(
                 dataset["target_text"],
-                max_length=args.max_seq_length,
+                max_length=args.max_length,
                 padding="max_length",
                 return_tensors="np",
                 truncation=True,
@@ -136,7 +140,7 @@ def preprocess_batch_for_hf_dataset(
 
         target_inputs = decoder_tokenizer(
             dataset["target_text"],
-            max_length=args.max_seq_length,
+            max_length=args.max_length,
             padding="max_length",
             return_tensors="np",
             truncation=True,
@@ -160,6 +164,7 @@ def load_hf_dataset(data, encoder_tokenizer, decoder_tokenizer, args):
             download_mode="force_redownload"
             if args.reprocess_input_data
             else "reuse_dataset_if_exists",
+            cache_dir=args.dataset_cache_dir,
         )
     else:
         dataset = HFDataset.from_pandas(data)
@@ -482,11 +487,19 @@ def generate_faiss_index_dataset(data, ctx_encoder_name, args, device):
     if isinstance(data, str):
         if args.include_title_in_knowledge_dataset:
             dataset = load_dataset(
-                "csv", data_files=data, delimiter="\t", column_names=["title", "text"]
+                "csv",
+                data_files=data,
+                delimiter="\t",
+                column_names=["title", "text"],
+                cache_dir=args.dataset_cache_dir,
             )
         else:
             dataset = load_dataset(
-                "csv", data_files=data, delimiter="\t", column_names=["text"]
+                "csv",
+                data_files=data,
+                delimiter="\t",
+                column_names=["text"],
+                cache_dir=args.dataset_cache_dir,
             )
     else:
         dataset = HFDataset.from_pandas(data)

@@ -23,7 +23,7 @@ from sklearn.metrics import (
     matthews_corrcoef,
     mean_squared_error,
 )
-from tensorboardX import SummaryWriter
+from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import DataLoader, RandomSampler, SequentialSampler, TensorDataset
 from torch.utils.data.distributed import DistributedSampler
 from tqdm.auto import tqdm, trange
@@ -35,7 +35,8 @@ from transformers.optimization import (
     get_cosine_with_hard_restarts_schedule_with_warmup,
     get_polynomial_decay_schedule_with_warmup,
 )
-from transformers.optimization import AdamW, Adafactor
+from torch.optim import AdamW
+from transformers.optimization import Adafactor
 from transformers import (
     BERT_PRETRAINED_MODEL_ARCHIVE_LIST,
     WEIGHTS_NAME,
@@ -43,7 +44,7 @@ from transformers import (
     BertModel,
     BertTokenizer,
 )
-from transformers.models.mmbt.configuration_mmbt import MMBTConfig
+from transformers.models.deprecated.mmbt.configuration_mmbt import MMBTConfig
 
 from simpletransformers.classification.classification_utils import (
     ImageEncoder,
@@ -397,7 +398,7 @@ class MultiModalClassificationModel:
         args = self.args
         multi_label = self.multi_label
 
-        tb_writer = SummaryWriter(logdir=args.tensorboard_dir)
+        tb_writer = SummaryWriter(log_dir=args.tensorboard_dir)
         train_sampler = RandomSampler(train_dataset)
         train_dataloader = DataLoader(
             train_dataset,
@@ -481,6 +482,7 @@ class MultiModalClassificationModel:
                 optimizer_grouped_parameters,
                 lr=args.learning_rate,
                 eps=args.adam_epsilon,
+                betas=args.adam_betas,
             )
         elif args.optimizer == "Adafactor":
             optimizer = Adafactor(
@@ -495,7 +497,7 @@ class MultiModalClassificationModel:
                 relative_step=args.adafactor_relative_step,
                 warmup_init=args.adafactor_warmup_init,
             )
-            print("Using Adafactor for T5")
+
         else:
             raise ValueError(
                 "{} is not a valid optimizer class. Please use one of ('AdamW', 'Adafactor') instead.".format(
@@ -568,10 +570,12 @@ class MultiModalClassificationModel:
         if args.wandb_project:
             wandb.init(
                 project=args.wandb_project,
-                config={**asdict(args), "repo": "simpletransformers"},
+                config={**asdict(args)},
                 **args.wandb_kwargs,
             )
+            wandb.run._label(repo="simpletransformers")
             wandb.watch(self.model)
+            self.wandb_run_id = wandb.run.id
 
         if args.fp16:
             from torch.cuda import amp
@@ -1034,7 +1038,13 @@ class MultiModalClassificationModel:
         return result, model_outputs
 
     def evaluate(
-        self, eval_dataset, output_dir, prefix="", verbose=True, silent=False, **kwargs,
+        self,
+        eval_dataset,
+        output_dir,
+        prefix="",
+        verbose=True,
+        silent=False,
+        **kwargs,
     ):
         """
         Evaluates the model on eval_df.

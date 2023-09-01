@@ -20,14 +20,14 @@ from sklearn.metrics import (
     matthews_corrcoef,
     mean_squared_error,
 )
-from tensorboardX import SummaryWriter
+from torch.utils.tensorboard import SummaryWriter
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader, RandomSampler, SequentialSampler, TensorDataset
 from torch.utils.data.distributed import DistributedSampler
 from tqdm.auto import tqdm, trange
+from torch.optim import AdamW
 from transformers import (
     WEIGHTS_NAME,
-    AdamW,
     AlbertConfig,
     AlbertTokenizer,
     BertConfig,

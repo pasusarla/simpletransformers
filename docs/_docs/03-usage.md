@@ -2,7 +2,7 @@
 title: "General Usage"
 permalink: /docs/usage/
 excerpt: "General usage instructions applicable to most tasks."
-last_modified_at: 2021/02/12 00:05:44
+last_modified_at: 2021/11/10 21:24:03
 toc: true
 ---
 
@@ -34,6 +34,7 @@ The currently implemented task-specific Simple Transformer models, along with th
 | Regression                                                | `ClassificationModel`           |
 | Sentence-pair classification                              | `ClassificationModel`           |
 | Text Representation Generation                            | `RepresentationModel`           |
+| Document Retrieval                                        | `RetrievalModel`                |
 
 
 
@@ -146,6 +147,7 @@ Configuration options in Simple Transformers are defined as either dataclasses o
 | adafactor_relative_step            | bool  | True                                                      | If True, time-dependent learning rate is computed instead of external learning rate.                                                                                                                                                                     |
 | adafactor_scale_parameter          | bool  | True                                                      | If True, learning rate is scaled by root mean square.                                                                                                                                                                                                    |
 | adafactor_warmup_init              | bool  | True                                                      | Time-dependent learning rate computation depends on whether warm-up initialization is being used.                                                                                                                                                        |
+| adam_betas                         | tuple | (0.9, 0.999)                                              | coefficients used for computing running averages of gradient and its square with AdamW.                                                                                                                                                                  |
 | adam_epsilon                       | float | 1e-8                                                      | Epsilon hyperparameter used in AdamOptimizer.                                                                                                                                                                                                            |
 | best_model_dir                     | str   | outputs/best_model                                        | The directory where the best model (model checkpoints) will be saved (based on eval_during_training)                                                                                                                                                     |
 | cache_dir                          | str   | cache_dir                                                 | The directory where cached files will be saved.                                                                                                                                                                                                          |
@@ -215,7 +217,7 @@ model_args = ClassificationArgs()
 model_args.num_train_epochs = 5
 model_args.learning_rate = 1e-4
 
-model = ClassficationModel("bert", "bert-base-cased", args=model_args)
+model = ClassificationModel("bert", "bert-base-cased", args=model_args)
 ```
 
 ### Using a python dictionary
@@ -229,7 +231,7 @@ model_args = {
     "learning_rate": 1e-4,
 }
 
-model = ClassficationModel("bert", "bert-base-cased", args=model_args)
+model = ClassificationModel("bert", "bert-base-cased", args=model_args)
 ```
 
 **Tip:** Using the dataclass approach has the benefits of IDE auto-completion as well as ensuring that there are no typos in arguments that could lead to unexpected behaviour.

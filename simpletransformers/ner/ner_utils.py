@@ -17,12 +17,16 @@
 
 from __future__ import absolute_import, division, print_function
 import enum
-
 import linecache
 import logging
 import os
 from io import open
 from multiprocessing import Pool, cpu_count
+
+try:
+    from collections import Iterable, Mapping
+except ImportError:
+    from collections.abc import Iterable, Mapping
 
 import pandas as pd
 import torch
@@ -112,14 +116,14 @@ def read_examples_from_file(data_file, mode, bbox=False):
                         x1 = []
                         y1 = []
                 else:
-                    splits = line.split(" ")
+                    splits = line.split()
                     words.append(splits[0])
                     if len(splits) > 1:
-                        labels.append(splits[1].replace("\n", ""))
-                        x0.append(split[2].replace("\n", ""))
-                        y0.append(split[3].replace("\n", ""))
-                        x1.append(split[4].replace("\n", ""))
-                        y1.append(split[5].replace("\n", ""))
+                        labels.append(splits[1])
+                        x0.append(splits[2])
+                        y0.append(splits[3])
+                        x1.append(splits[4])
+                        y1.append(splits[5])
                     else:
                         # Examples could have no label for mode = "test"
                         labels.append("O")
@@ -280,14 +284,17 @@ def convert_example_to_feature(
                 word_tokens = tokenizer.tokenize(word)
             else:
                 word_tokens = example.tokenized_word_ids[i]
-            tokens.extend(word_tokens)
             # Use the real label id for the first token of the word, and padding ids for the remaining tokens
             if (
                 word_tokens
             ):  # avoid non printable character like '\u200e' which are tokenized as a void token ''
-                label_ids.extend(
-                    [label_map[label]] + [pad_token_label_id] * (len(word_tokens) - 1)
-                )
+                tokens.extend(word_tokens)
+            else:
+                word_tokens = tokenizer.tokenize(tokenizer.unk_token)
+                tokens.extend(word_tokens)
+            label_ids.extend(
+                [label_map[label]] + [pad_token_label_id] * (len(word_tokens) - 1)
+            )
 
     # Account for [CLS] and [SEP] with "- 2" and with "- 3" for RoBERTa.
     special_tokens_count = 3 if sep_token_extra else 2
@@ -469,7 +476,6 @@ def convert_examples_to_features(
                     p.imap(
                         convert_examples_with_multiprocessing,
                         examples,
-                        chunksize=chunksize,
                     ),
                     total=len(examples),
                     disable=silent,
@@ -678,7 +684,7 @@ class LazyNERDataset(Dataset):
     def __init__(self, data_file, tokenizer, args):
         self.data_file = data_file
         self.lazy_loading_start_line = (
-            args.lazy_loading_start_line if args.lazy_loading_start_line else 0
+            args.lazy_loading_start_line if args.lazy_loading_start_line else 1
         )
         self.example_lines, self.num_entries = self._get_examples(
             self.data_file, self.lazy_loading_start_line
@@ -713,10 +719,10 @@ class LazyNERDataset(Dataset):
             else:
                 # Examples could have no label for mode = "test"
                 labels.append("O")
-        if words:
-            example = InputExample(
-                guid="%s-%d".format("train", idx), words=words, labels=labels
-            )
+
+        example = InputExample(
+            guid="%s-%d".format("train", idx), words=words, labels=labels
+        )
 
         label_map = {label: i for i, label in enumerate(self.args.labels_list)}
 
@@ -747,3 +753,18 @@ class LazyNERDataset(Dataset):
 
     def __len__(self):
         return self.num_entries
+
+
+def flatten_results(results, parent_key="", sep="/"):
+    out = []
+    if isinstance(results, Mapping):
+        for key, value in results.items():
+            pkey = parent_key + sep + str(key) if parent_key else str(key)
+            out.extend(flatten_results(value, parent_key=pkey).items())
+    elif isinstance(results, Iterable):
+        for key, value in enumerate(results):
+            pkey = parent_key + sep + str(key) if parent_key else str(key)
+            out.extend(flatten_results(value, parent_key=pkey).items())
+    else:
+        out.append((parent_key, results))
+    return dict(out)

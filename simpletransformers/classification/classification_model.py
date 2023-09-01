@@ -3,7 +3,7 @@
 
 
 from __future__ import absolute_import, division, print_function
-
+import collections
 import logging
 import math
 import os
@@ -29,7 +29,8 @@ from sklearn.metrics import (
     auc,
     average_precision_score,
 )
-from tensorboardX import SummaryWriter
+from torch.utils.tensorboard import SummaryWriter
+from torch.nn import CrossEntropyLoss
 from torch.utils.data import DataLoader, RandomSampler, SequentialSampler, TensorDataset
 from torch.utils.data.distributed import DistributedSampler
 from tqdm.auto import tqdm, trange
@@ -42,41 +43,65 @@ from transformers.optimization import (
     get_cosine_with_hard_restarts_schedule_with_warmup,
     get_polynomial_decay_schedule_with_warmup,
 )
-from transformers.optimization import AdamW, Adafactor
+from torch.optim import AdamW
+from transformers.optimization import Adafactor
 from transformers import (
     AlbertConfig,
     AlbertTokenizer,
+    AlbertForSequenceClassification,
     AutoConfig,
     AutoModelForSequenceClassification,
     AutoTokenizer,
     BertConfig,
     BertTokenizerFast,
+    BertForSequenceClassification,
     BertweetTokenizer,
     BigBirdConfig,
     BigBirdTokenizer,
     BigBirdForSequenceClassification,
     CamembertConfig,
     CamembertTokenizerFast,
+    CamembertForSequenceClassification,
     DebertaConfig,
     DebertaForSequenceClassification,
     DebertaTokenizer,
+    DebertaV2Config,
+    DebertaV2ForSequenceClassification,
+    DebertaV2Tokenizer,
     DistilBertConfig,
     DistilBertTokenizerFast,
+    DistilBertForSequenceClassification,
     ElectraConfig,
     ElectraTokenizerFast,
+    ElectraForSequenceClassification,
     FlaubertConfig,
     FlaubertTokenizer,
+    FlaubertForSequenceClassification,
+    HerbertTokenizerFast,
     LayoutLMConfig,
     LayoutLMTokenizerFast,
+    LayoutLMForSequenceClassification,
+    LayoutLMv2Config,
+    LayoutLMv2TokenizerFast,
+    LayoutLMv2ForSequenceClassification,
     LongformerConfig,
     LongformerTokenizerFast,
+    LongformerForSequenceClassification,
     MPNetConfig,
     MPNetForSequenceClassification,
     MPNetTokenizerFast,
     MobileBertConfig,
     MobileBertTokenizerFast,
+    MobileBertForSequenceClassification,
+    NystromformerConfig,
+    # NystromformerTokenizer,
+    NystromformerForSequenceClassification,
+    RemBertConfig,
+    RemBertTokenizerFast,
+    RemBertForSequenceClassification,
     RobertaConfig,
     RobertaTokenizerFast,
+    RobertaForSequenceClassification,
     SqueezeBertConfig,
     SqueezeBertForSequenceClassification,
     SqueezeBertTokenizerFast,
@@ -84,9 +109,12 @@ from transformers import (
     XLMConfig,
     XLMRobertaConfig,
     XLMRobertaTokenizerFast,
+    XLMRobertaForSequenceClassification,
     XLMTokenizer,
+    XLMForSequenceClassification,
     XLNetConfig,
     XLNetTokenizerFast,
+    XLNetForSequenceClassification,
 )
 from transformers.convert_graph_to_onnx import convert, quantize
 
@@ -96,47 +124,14 @@ from simpletransformers.classification.classification_utils import (
     ClassificationDataset,
     convert_examples_to_features,
     load_hf_dataset,
-)
-from simpletransformers.classification.transformer_models.albert_model import (
-    AlbertForSequenceClassification,
-)
-from simpletransformers.classification.transformer_models.bert_model import (
-    BertForSequenceClassification,
-)
-from simpletransformers.classification.transformer_models.camembert_model import (
-    CamembertForSequenceClassification,
-)
-from simpletransformers.classification.transformer_models.distilbert_model import (
-    DistilBertForSequenceClassification,
-)
-from simpletransformers.classification.transformer_models.flaubert_model import (
-    FlaubertForSequenceClassification,
-)
-from simpletransformers.classification.transformer_models.layoutlm_model import (
-    LayoutLMForSequenceClassification,
-)
-from simpletransformers.classification.transformer_models.longformer_model import (
-    LongformerForSequenceClassification,
-)
-from simpletransformers.classification.transformer_models.mobilebert_model import (
-    MobileBertForSequenceClassification,
-)
-from simpletransformers.classification.transformer_models.roberta_model import (
-    RobertaForSequenceClassification,
-)
-from simpletransformers.classification.transformer_models.xlm_model import (
-    XLMForSequenceClassification,
-)
-from simpletransformers.classification.transformer_models.xlm_roberta_model import (
-    XLMRobertaForSequenceClassification,
-)
-from simpletransformers.classification.transformer_models.xlnet_model import (
-    XLNetForSequenceClassification,
+    flatten_results,
 )
 from simpletransformers.config.global_args import global_args
 from simpletransformers.config.model_args import ClassificationArgs
 from simpletransformers.config.utils import sweep_config_to_sweep_values
-from simpletransformers.custom_models.models import ElectraForSequenceClassification
+from simpletransformers.losses.loss_utils import init_loss
+
+# from simpletransformers.custom_models.models import ElectraForSequenceClassification
 
 
 try:
@@ -157,6 +152,7 @@ MODELS_WITH_EXTRA_SEP_TOKEN = [
     "xlmroberta",
     "longformer",
     "mpnet",
+    "nystromformer",
 ]
 
 MODELS_WITH_ADD_PREFIX_SPACE = [
@@ -165,6 +161,7 @@ MODELS_WITH_ADD_PREFIX_SPACE = [
     "xlmroberta",
     "longformer",
     "mpnet",
+    "nystromformer",
 ]
 
 MODELS_WITHOUT_SLIDING_WINDOW_SUPPORT = ["squeezebert"]
@@ -228,6 +225,11 @@ class ClassificationModel:
                 DebertaForSequenceClassification,
                 DebertaTokenizer,
             ),
+            "debertav2": (
+                DebertaV2Config,
+                DebertaV2ForSequenceClassification,
+                DebertaV2Tokenizer,
+            ),
             "distilbert": (
                 DistilBertConfig,
                 DistilBertForSequenceClassification,
@@ -243,10 +245,20 @@ class ClassificationModel:
                 FlaubertForSequenceClassification,
                 FlaubertTokenizer,
             ),
+            "herbert": (
+                BertConfig,
+                BertForSequenceClassification,
+                HerbertTokenizerFast,
+            ),
             "layoutlm": (
                 LayoutLMConfig,
                 LayoutLMForSequenceClassification,
                 LayoutLMTokenizerFast,
+            ),
+            "layoutlmv2": (
+                LayoutLMv2Config,
+                LayoutLMv2ForSequenceClassification,
+                LayoutLMv2TokenizerFast,
             ),
             "longformer": (
                 LongformerConfig,
@@ -259,6 +271,16 @@ class ClassificationModel:
                 MobileBertTokenizerFast,
             ),
             "mpnet": (MPNetConfig, MPNetForSequenceClassification, MPNetTokenizerFast),
+            "nystromformer": (
+                NystromformerConfig,
+                NystromformerForSequenceClassification,
+                BigBirdTokenizer,
+            ),
+            "rembert": (
+                RemBertConfig,
+                RemBertForSequenceClassification,
+                RemBertTokenizerFast,
+            ),
             "roberta": (
                 RobertaConfig,
                 RobertaForSequenceClassification,
@@ -311,7 +333,7 @@ class ClassificationModel:
             if self.args.n_gpu > 0:
                 torch.cuda.manual_seed_all(self.args.manual_seed)
 
-        if self.args.labels_list:
+        if self.args.labels_list and not self.args.lazy_loading:
             if num_labels:
                 assert num_labels == len(self.args.labels_list)
             if self.args.labels_map:
@@ -370,6 +392,10 @@ class ClassificationModel:
         else:
             self.device = "cpu"
 
+        self.loss_fct = init_loss(
+            weight=self.weight, device=self.device, args=self.args
+        )
+
         if self.args.onnx:
             from onnxruntime import InferenceSession, SessionOptions
 
@@ -392,32 +418,17 @@ class ClassificationModel:
                 )
         else:
             if not self.args.quantized_model:
-                if self.weight:
-                    self.model = model_class.from_pretrained(
-                        model_name,
-                        config=self.config,
-                        weight=torch.Tensor(self.weight).to(self.device),
-                        **kwargs,
-                    )
-                else:
-                    self.model = model_class.from_pretrained(
-                        model_name, config=self.config, **kwargs
-                    )
+                self.model = model_class.from_pretrained(
+                    model_name, config=self.config, **kwargs
+                )
             else:
                 quantized_weights = torch.load(
                     os.path.join(model_name, "pytorch_model.bin")
                 )
-                if self.weight:
-                    self.model = model_class.from_pretrained(
-                        None,
-                        config=self.config,
-                        state_dict=quantized_weights,
-                        weight=torch.Tensor(self.weight).to(self.device),
-                    )
-                else:
-                    self.model = model_class.from_pretrained(
-                        None, config=self.config, state_dict=quantized_weights
-                    )
+
+                self.model = model_class.from_pretrained(
+                    None, config=self.config, state_dict=quantized_weights
+                )
 
             if self.args.dynamic_quantize:
                 self.model = torch.quantization.quantize_dynamic(
@@ -546,7 +557,7 @@ class ClassificationModel:
                 raise ValueError(
                     "HuggingFace Datasets cannot be used with sliding window."
                 )
-            if self.args.model_type == "layoutlm":
+            if self.args.model_type in ["layoutlm", "layoutlmv2"]:
                 raise NotImplementedError(
                     "HuggingFace Datasets support is not implemented for LayoutLM models"
                 )
@@ -556,7 +567,7 @@ class ClassificationModel:
         elif isinstance(train_df, str) and self.args.lazy_loading:
             if self.args.sliding_window:
                 raise ValueError("Lazy loading cannot be used with sliding window.")
-            if self.args.model_type == "layoutlm":
+            if self.args.model_type in ["layoutlm", "layoutlmv2"]:
                 raise NotImplementedError(
                     "Lazy loading is not implemented for LayoutLM models"
                 )
@@ -569,7 +580,7 @@ class ClassificationModel:
                     "Input must be given as a path to a file when using lazy loading"
                 )
             if "text" in train_df.columns and "labels" in train_df.columns:
-                if self.args.model_type == "layoutlm":
+                if self.args.model_type in ["layoutlm", "layoutlmv2"]:
                     train_examples = [
                         InputExample(i, text, None, label, x0, y0, x1, y1)
                         for i, (text, label, x0, y0, x1, y1) in enumerate(
@@ -589,7 +600,7 @@ class ClassificationModel:
                         train_df["labels"].tolist(),
                     )
             elif "text_a" in train_df.columns and "text_b" in train_df.columns:
-                if self.args.model_type == "layoutlm":
+                if self.args.model_type in ["layoutlm", "layoutlmv2"]:
                     raise ValueError("LayoutLM cannot be used with sentence-pair tasks")
                 else:
                     train_examples = (
@@ -650,6 +661,7 @@ class ClassificationModel:
         multi_label=False,
         show_running_loss=True,
         eval_df=None,
+        test_df=None,
         verbose=True,
         **kwargs,
     ):
@@ -662,7 +674,7 @@ class ClassificationModel:
         model = self.model
         args = self.args
 
-        tb_writer = SummaryWriter(logdir=args.tensorboard_dir)
+        tb_writer = SummaryWriter(log_dir=args.tensorboard_dir)
 
         t_total = (
             len(train_dataloader)
@@ -738,6 +750,7 @@ class ClassificationModel:
                 optimizer_grouped_parameters,
                 lr=args.learning_rate,
                 eps=args.adam_epsilon,
+                betas=args.adam_betas,
             )
         elif args.optimizer == "Adafactor":
             optimizer = Adafactor(
@@ -752,7 +765,7 @@ class ClassificationModel:
                 relative_step=args.adafactor_relative_step,
                 warmup_init=args.adafactor_warmup_init,
             )
-            print("Using Adafactor for T5")
+
         else:
             raise ValueError(
                 "{} is not a valid optimizer class. Please use one of ('AdamW', 'Adafactor') instead.".format(
@@ -858,9 +871,11 @@ class ClassificationModel:
                 logger.info(" Initializing WandB run for training.")
                 wandb.init(
                     project=args.wandb_project,
-                    config={**asdict(args), "repo": "simpletransformers"},
+                    config={**asdict(args)},
                     **args.wandb_kwargs,
                 )
+                wandb.run._label(repo="simpletransformers")
+                self.wandb_run_id = wandb.run.id
             wandb.watch(self.model)
 
         if self.args.fp16:
@@ -890,13 +905,21 @@ class ClassificationModel:
                 inputs = self._get_inputs_dict(batch)
                 if self.args.fp16:
                     with amp.autocast():
-                        outputs = model(**inputs)
-                        # model outputs are always tuple in pytorch-transformers (see doc)
-                        loss = outputs[0]
+                        loss, *_ = self._calculate_loss(
+                            model,
+                            inputs,
+                            loss_fct=self.loss_fct,
+                            num_labels=self.num_labels,
+                            args=self.args,
+                        )
                 else:
-                    outputs = model(**inputs)
-                    # model outputs are always tuple in pytorch-transformers (see doc)
-                    loss = outputs[0]
+                    loss, *_ = self._calculate_loss(
+                        model,
+                        inputs,
+                        loss_fct=self.loss_fct,
+                        num_labels=self.num_labels,
+                        args=self.args,
+                    )
 
                 if args.n_gpu > 1:
                     loss = (
@@ -978,10 +1001,6 @@ class ClassificationModel:
                             wandb_log=False,
                             **kwargs,
                         )
-                        for key, value in results.items():
-                            tb_writer.add_scalar(
-                                "eval_{}".format(key), value, global_step
-                            )
 
                         output_dir_current = os.path.join(
                             output_dir, "checkpoint-{}".format(global_step)
@@ -1000,6 +1019,21 @@ class ClassificationModel:
                         training_progress_scores["train_loss"].append(current_loss)
                         for key in results:
                             training_progress_scores[key].append(results[key])
+
+                        if test_df is not None:
+                            test_results, _, _ = self.eval_model(
+                                test_df,
+                                verbose=verbose
+                                and args.evaluate_during_training_verbose,
+                                silent=args.evaluate_during_training_silent,
+                                wandb_log=False,
+                                **kwargs,
+                            )
+                            for key in test_results:
+                                training_progress_scores["test_" + key].append(
+                                    test_results[key]
+                                )
+
                         report = pd.DataFrame(training_progress_scores)
                         report.to_csv(
                             os.path.join(
@@ -1010,6 +1044,18 @@ class ClassificationModel:
 
                         if args.wandb_project or self.is_sweeping:
                             wandb.log(self._get_last_metrics(training_progress_scores))
+
+                        for key, value in flatten_results(
+                            self._get_last_metrics(training_progress_scores)
+                        ).items():
+                            try:
+                                tb_writer.add_scalar(key, value, global_step)
+                            except (NotImplementedError, AssertionError):
+                                if verbose:
+                                    logger.warning(
+                                        f"can't log value of type: {type(value)} to tensorboar"
+                                    )
+                        tb_writer.flush()
 
                         if not best_eval_metric:
                             best_eval_metric = results[args.early_stopping_metric]
@@ -1138,6 +1184,19 @@ class ClassificationModel:
                 training_progress_scores["train_loss"].append(current_loss)
                 for key in results:
                     training_progress_scores[key].append(results[key])
+                if test_df is not None:
+                    test_results, _, _ = self.eval_model(
+                        test_df,
+                        verbose=verbose and args.evaluate_during_training_verbose,
+                        silent=args.evaluate_during_training_silent,
+                        wandb_log=False,
+                        **kwargs,
+                    )
+                    for key in test_results:
+                        training_progress_scores["test_" + key].append(
+                            test_results[key]
+                        )
+
                 report = pd.DataFrame(training_progress_scores)
                 report.to_csv(
                     os.path.join(args.output_dir, "training_progress_scores.csv"),
@@ -1146,6 +1205,18 @@ class ClassificationModel:
 
                 if args.wandb_project or self.is_sweeping:
                     wandb.log(self._get_last_metrics(training_progress_scores))
+
+                for key, value in flatten_results(
+                    self._get_last_metrics(training_progress_scores)
+                ).items():
+                    try:
+                        tb_writer.add_scalar(key, value, global_step)
+                    except (NotImplementedError, AssertionError):
+                        if verbose:
+                            logger.warning(
+                                f"can't log value of type: {type(value)} to tensorboar"
+                            )
+                tb_writer.flush()
 
                 if not best_eval_metric:
                     best_eval_metric = results[args.early_stopping_metric]
@@ -1329,7 +1400,7 @@ class ClassificationModel:
                 raise ValueError(
                     "HuggingFace Datasets cannot be used with sliding window."
                 )
-            if self.args.model_type == "layoutlm":
+            if self.args.model_type in ["layoutlm", "layoutlmv2"]:
                 raise NotImplementedError(
                     "HuggingFace Datasets support is not implemented for LayoutLM models"
                 )
@@ -1338,7 +1409,7 @@ class ClassificationModel:
             )
             eval_examples = None
         elif isinstance(eval_df, str) and self.args.lazy_loading:
-            if self.args.model_type == "layoutlm":
+            if self.args.model_type in ["layoutlm", "layoutlmv2"]:
                 raise NotImplementedError(
                     "Lazy loading is not implemented for LayoutLM models"
                 )
@@ -1351,7 +1422,7 @@ class ClassificationModel:
                 )
 
             if "text" in eval_df.columns and "labels" in eval_df.columns:
-                if self.args.model_type == "layoutlm":
+                if self.args.model_type in ["layoutlm", "layoutlmv2"]:
                     eval_examples = [
                         InputExample(i, text, None, label, x0, y0, x1, y1)
                         for i, (text, label, x0, y0, x1, y1) in enumerate(
@@ -1371,7 +1442,7 @@ class ClassificationModel:
                         eval_df["labels"].tolist(),
                     )
             elif "text_a" in eval_df.columns and "text_b" in eval_df.columns:
-                if self.args.model_type == "layoutlm":
+                if self.args.model_type in ["layoutlm", "layoutlmv2"]:
                     raise ValueError("LayoutLM cannot be used with sentence-pair tasks")
                 else:
                     eval_examples = (
@@ -1433,10 +1504,22 @@ class ClassificationModel:
 
                 if self.args.fp16:
                     with amp.autocast():
-                        outputs = model(**inputs)
+                        outputs = self._calculate_loss(
+                            model,
+                            inputs,
+                            loss_fct=self.loss_fct,
+                            num_labels=self.num_labels,
+                            args=self.args,
+                        )
                         tmp_eval_loss, logits = outputs[:2]
                 else:
-                    outputs = model(**inputs)
+                    outputs = self._calculate_loss(
+                        model,
+                        inputs,
+                        loss_fct=self.loss_fct,
+                        num_labels=self.num_labels,
+                        args=self.args,
+                    )
                     tmp_eval_loss, logits = outputs[:2]
 
                 if multi_label:
@@ -1485,18 +1568,25 @@ class ClassificationModel:
             ]
 
             model_outputs = preds
-
-            preds = [np.argmax(pred, axis=1) for pred in preds]
-            final_preds = []
-            for pred_row in preds:
-                val_freqs_desc = Counter(pred_row).most_common()
-                if (
-                    len(val_freqs_desc) > 1
-                    and val_freqs_desc[0][1] == val_freqs_desc[1][1]
-                ):
-                    final_preds.append(args.tie_value)
-                else:
-                    final_preds.append(val_freqs_desc[0][0])
+            if args.regression is True:
+                preds = [np.squeeze(pred) for pred in preds]
+                final_preds = []
+                for pred_row in preds:
+                    mean_pred = np.mean(pred_row)
+                    print(mean_pred)
+                    final_preds.append(mean_pred)
+            else:
+                preds = [np.argmax(pred, axis=1) for pred in preds]
+                final_preds = []
+                for pred_row in preds:
+                    val_freqs_desc = Counter(pred_row).most_common()
+                    if (
+                        len(val_freqs_desc) > 1
+                        and val_freqs_desc[0][1] == val_freqs_desc[1][1]
+                    ):
+                        final_preds.append(args.tie_value)
+                    else:
+                        final_preds.append(val_freqs_desc[0][0])
             preds = np.array(final_preds)
         elif not multi_label and args.regression is True:
             preds = np.squeeze(preds)
@@ -1528,9 +1618,10 @@ class ClassificationModel:
                 logger.info(" Initializing WandB run for evaluation.")
                 wandb.init(
                     project=args.wandb_project,
-                    config={**asdict(args), "repo": "simpletransformers"},
+                    config={**asdict(args)},
                     **args.wandb_kwargs,
                 )
+                wandb.run._label(repo="simpletransformers")
             if not args.labels_map:
                 self.args.labels_map = {i: i for i in range(self.num_labels)}
 
@@ -1543,21 +1634,17 @@ class ClassificationModel:
 
             # Confusion Matrix
             wandb.sklearn.plot_confusion_matrix(
-                truth, [inverse_labels_map[pred] for pred in preds], labels=labels_list,
+                truth,
+                [inverse_labels_map[pred] for pred in preds],
+                labels=labels_list,
             )
 
             if not self.args.sliding_window:
                 # ROC`
-                wandb.log({"roc": wandb.plots.ROC(truth, model_outputs, labels_list)})
+                wandb.log({"roc": wandb.plot.roc_curve(truth, model_outputs, labels_list)})
 
                 # Precision Recall
-                wandb.log(
-                    {
-                        "pr": wandb.plots.precision_recall(
-                            truth, model_outputs, labels_list
-                        )
-                    }
-                )
+                wandb.log({"pr": wandb.plot.pr_curve(truth, model_outputs, labels_list)})
 
         return results, model_outputs, wrong
 
@@ -1593,7 +1680,7 @@ class ClassificationModel:
             os.makedirs(self.args.cache_dir, exist_ok=True)
 
         mode = "dev" if evaluate else "train"
-        if args.sliding_window or self.args.model_type == "layoutlm":
+        if args.sliding_window or self.args.model_type in ["layoutlm", "layoutlmv2"]:
             cached_features_file = os.path.join(
                 args.cache_dir,
                 "cached_{}_{}_{}_{}_{}".format(
@@ -1620,7 +1707,7 @@ class ClassificationModel:
                     if args.sliding_window:
                         logger.info(" Sliding window enabled")
 
-                if self.args.model_type != "layoutlm":
+                if self.args.model_type not in ["layoutlm", "layoutlmv2"]:
                     if len(examples) == 3:
                         examples = [
                             InputExample(i, text_a, text_b, label)
@@ -1699,7 +1786,7 @@ class ClassificationModel:
                 [f.segment_ids for f in features], dtype=torch.long
             )
 
-            if self.args.model_type == "layoutlm":
+            if self.args.model_type in ["layoutlm", "layoutlmv2"]:
                 all_bboxes = torch.tensor(
                     [f.bboxes for f in features], dtype=torch.long
                 )
@@ -1713,7 +1800,7 @@ class ClassificationModel:
                     [f.label_id for f in features], dtype=torch.float
                 )
 
-            if self.args.model_type == "layoutlm":
+            if self.args.model_type in ["layoutlm", "layoutlmv2"]:
                 dataset = TensorDataset(
                     all_input_ids,
                     all_input_mask,
@@ -1773,7 +1860,10 @@ class ClassificationModel:
 
         extra_metrics = {}
         for metric, func in kwargs.items():
-            extra_metrics[metric] = func(labels, preds)
+            if metric.startswith("prob_"):
+                extra_metrics[metric] = func(labels, model_outputs)
+            else:
+                extra_metrics[metric] = func(labels, preds)
 
         if multi_label:
             threshold_values = self.args.threshold if self.args.threshold else 0.5
@@ -1794,6 +1884,33 @@ class ClassificationModel:
             mismatched = labels != preds
 
         if eval_examples:
+            if not isinstance(eval_examples[0], InputExample):
+                if len(eval_examples) == 2:
+                    # Single sentence task
+                    eval_examples = [
+                        InputExample(
+                            guid=i,
+                            text_a=example,
+                            text_b=None,
+                            label=label,
+                        )
+                        for i, (example, label) in enumerate(
+                            zip(eval_examples[0], eval_examples[1])
+                        )
+                    ]
+                elif len(eval_examples) == 3:
+                    # Sentence pair task
+                    eval_examples = [
+                        InputExample(
+                            guid=i,
+                            text_a=example_a,
+                            text_b=example_b,
+                            label=label,
+                        )
+                        for i, (example_a, example_b, label) in enumerate(
+                            zip(eval_examples[0], eval_examples[1], eval_examples[2])
+                        )
+                    ]
             wrong = [i for (i, v) in zip(eval_examples, mismatched) if v.any()]
         else:
             wrong = ["NA"]
@@ -1844,6 +1961,13 @@ class ClassificationModel:
 
         Args:
             to_predict: A python list of text (str) to be sent to the model for prediction.
+                        For layoutlm and layoutlmv2 model types, this should be a list of lists:
+                        [
+                            [text1, [x0], [y0], [x1], [y1]],
+                            [text2, [x0], [y0], [x1], [y1]],
+                            ...
+                            [textn, [x0], [y0], [x1], [y1]]
+                        ]
 
         Returns:
             preds: A python list of the predictions (0 or 1) for each text.
@@ -1866,21 +1990,49 @@ class ClassificationModel:
                 to_predict, return_tensors="pt", padding=True, truncation=True
             )
 
-            for i, (input_ids, attention_mask) in enumerate(
-                zip(model_inputs["input_ids"], model_inputs["attention_mask"])
-            ):
-                input_ids = input_ids.unsqueeze(0).detach().cpu().numpy()
-                attention_mask = attention_mask.unsqueeze(0).detach().cpu().numpy()
-                inputs_onnx = {"input_ids": input_ids, "attention_mask": attention_mask}
+            if self.args.model_type in [
+                "bert",
+                "xlnet",
+                "albert",
+                "layoutlm",
+                "layoutlmv2",
+            ]:
+                for i, (input_ids, attention_mask, token_type_ids) in enumerate(
+                    zip(
+                        model_inputs["input_ids"],
+                        model_inputs["attention_mask"],
+                        model_inputs["token_type_ids"],
+                    )
+                ):
+                    input_ids = input_ids.unsqueeze(0).detach().cpu().numpy()
+                    attention_mask = attention_mask.unsqueeze(0).detach().cpu().numpy()
+                    token_type_ids = token_type_ids.unsqueeze(0).detach().cpu().numpy()
+                    inputs_onnx = {
+                        "input_ids": input_ids,
+                        "attention_mask": attention_mask,
+                        "token_type_ids": token_type_ids,
+                    }
 
-                # Run the model (None = get all the outputs)
-                output = self.model.run(None, inputs_onnx)
+                    # Run the model (None = get all the outputs)
+                    output = self.model.run(None, inputs_onnx)
 
-                preds[i] = output[0]
-                # if preds is None:
-                #     preds = output[0]
-                # else:
-                #     preds = np.append(preds, output[0], axis=0)
+                    preds[i] = output[0]
+
+            else:
+                for i, (input_ids, attention_mask) in enumerate(
+                    zip(model_inputs["input_ids"], model_inputs["attention_mask"])
+                ):
+                    input_ids = input_ids.unsqueeze(0).detach().cpu().numpy()
+                    attention_mask = attention_mask.unsqueeze(0).detach().cpu().numpy()
+                    inputs_onnx = {
+                        "input_ids": input_ids,
+                        "attention_mask": attention_mask,
+                    }
+
+                    # Run the model (None = get all the outputs)
+                    output = self.model.run(None, inputs_onnx)
+
+                    preds[i] = output[0]
 
             model_outputs = preds
             preds = np.argmax(preds, axis=1)
@@ -1900,10 +2052,16 @@ class ClassificationModel:
                 model = torch.nn.DataParallel(model)
 
             if isinstance(to_predict[0], list):
-                eval_examples = (
-                    *zip(*to_predict),
-                    [dummy_label for i in range(len(to_predict))],
-                )
+                if self.args.model_type in ["layoutlm", "layoutlmv2"]:
+                    eval_examples = [
+                        InputExample(i, text, None, dummy_label, x0, y0, x1, y1)
+                        for i, (text, x0, y0, x1, y1) in enumerate(to_predict)
+                    ]
+                else:
+                    eval_examples = (
+                        *zip(*to_predict),
+                        [dummy_label for i in range(len(to_predict))],
+                    )
             else:
                 eval_examples = (
                     to_predict,
@@ -1947,10 +2105,22 @@ class ClassificationModel:
 
                         if self.args.fp16:
                             with amp.autocast():
-                                outputs = model(**inputs)
+                                outputs = self._calculate_loss(
+                                    model,
+                                    inputs,
+                                    loss_fct=self.loss_fct,
+                                    num_labels=self.num_labels,
+                                    args=self.args,
+                                )
                                 tmp_eval_loss, logits = outputs[:2]
                         else:
-                            outputs = model(**inputs)
+                            outputs = self._calculate_loss(
+                                model,
+                                inputs,
+                                loss_fct=self.loss_fct,
+                                num_labels=self.num_labels,
+                                args=self.args,
+                            )
                             tmp_eval_loss, logits = outputs[:2]
                         embedding_outputs, layer_hidden_states = (
                             outputs[2][0],
@@ -2009,10 +2179,22 @@ class ClassificationModel:
 
                         if self.args.fp16:
                             with amp.autocast():
-                                outputs = model(**inputs)
+                                outputs = self._calculate_loss(
+                                    model,
+                                    inputs,
+                                    loss_fct=self.loss_fct,
+                                    num_labels=self.num_labels,
+                                    args=self.args,
+                                )
                                 tmp_eval_loss, logits = outputs[:2]
                         else:
-                            outputs = model(**inputs)
+                            outputs = self._calculate_loss(
+                                model,
+                                inputs,
+                                loss_fct=self.loss_fct,
+                                num_labels=self.num_labels,
+                                args=self.args,
+                            )
                             tmp_eval_loss, logits = outputs[:2]
 
                         if multi_label:
@@ -2035,13 +2217,6 @@ class ClassificationModel:
                         inputs["labels"].detach().cpu().numpy()
                     )
 
-                    # if preds is None:
-                    #     preds = logits.detach().cpu().numpy()
-                    #     out_label_ids = inputs["labels"].detach().cpu().numpy()
-                    # else:
-                    #     preds = np.append(preds, logits.detach().cpu().numpy(), axis=0)
-                    #     out_label_ids = np.append(out_label_ids, inputs["labels"].detach().cpu().numpy(), axis=0)
-
             eval_loss = eval_loss / nb_eval_steps
 
             if args.sliding_window:
@@ -2057,15 +2232,30 @@ class ClassificationModel:
                 ]
 
                 model_outputs = preds
-
-                preds = [np.argmax(pred, axis=1) for pred in preds]
-                final_preds = []
-                for pred_row in preds:
-                    mode_pred, counts = mode(pred_row)
-                    if len(counts) > 1 and counts[0] == counts[1]:
-                        final_preds.append(args.tie_value)
-                    else:
-                        final_preds.append(mode_pred[0])
+                if args.regression is True:
+                    preds = [np.squeeze(pred) for pred in preds]
+                    final_preds = []
+                    for pred_row in preds:
+                        mean_pred = np.mean(pred_row)
+                        # print(mean_pred)
+                        final_preds.append(mean_pred)
+                else:
+                    preds = [np.argmax(pred, axis=1) for pred in preds]
+                    final_preds = []
+                    for pred_row in preds:
+                        val_freqs_desc = Counter(pred_row).most_common()
+                        if (
+                            len(val_freqs_desc) > 1
+                            and val_freqs_desc[0][1] == val_freqs_desc[1][1]
+                        ):
+                            final_preds.append(args.tie_value)
+                        else:
+                            final_preds.append(val_freqs_desc[0][0])
+                        # mode_pred, counts = mode(pred_row)
+                        # if len(counts) > 1 and counts[0] == counts[1]:
+                        #     final_preds.append(args.tie_value)
+                        # else:
+                        #     final_preds.append(mode_pred[0])
                 preds = np.array(final_preds)
             elif not multi_label and args.regression is True:
                 preds = np.squeeze(preds)
@@ -2139,6 +2329,17 @@ class ClassificationModel:
         self.config.save_pretrained(output_dir)
         self.save_model_args(output_dir)
 
+    def _calculate_loss(self, model, inputs, loss_fct, num_labels, args):
+        outputs = model(**inputs)
+        # model outputs are always tuple in pytorch-transformers (see doc)
+        loss = outputs[0]
+        if loss_fct:
+            logits = outputs[1]
+            labels = inputs["labels"]
+
+            loss = loss_fct(logits.view(-1, num_labels), labels.view(-1))
+        return (loss, *outputs[1:])
+
     def _threshold(self, x, threshold):
         if x >= threshold:
             return 1
@@ -2150,7 +2351,7 @@ class ClassificationModel:
     def _get_inputs_dict(self, batch, no_hf=False):
         if self.args.use_hf_datasets and not no_hf:
             return {key: value.to(self.device) for key, value in batch.items()}
-        if isinstance(batch[0], dict):
+        if isinstance(batch[0], dict) or isinstance(batch[0].data, dict):
             inputs = {
                 key: value.squeeze(1).to(self.device) for key, value in batch[0].items()
             }
@@ -2168,11 +2369,12 @@ class ClassificationModel:
             if self.args.model_type != "distilbert":
                 inputs["token_type_ids"] = (
                     batch[2]
-                    if self.args.model_type in ["bert", "xlnet", "albert", "layoutlm"]
+                    if self.args.model_type
+                    in ["bert", "xlnet", "albert", "layoutlm", "layoutlmv2"]
                     else None
                 )
 
-        if self.args.model_type == "layoutlm":
+        if self.args.model_type in ["layoutlm", "layoutlmv2"]:
             inputs["bbox"] = batch[4]
 
         return inputs
@@ -2181,7 +2383,8 @@ class ClassificationModel:
         return {metric: values[-1] for metric, values in metric_values.items()}
 
     def _create_training_progress_scores(self, multi_label, **kwargs):
-        extra_metrics = {key: [] for key in kwargs}
+        return collections.defaultdict(list)
+        """extra_metrics = {key: [] for key in kwargs}
         if multi_label:
             training_progress_scores = {
                 "global_step": [],
@@ -2234,7 +2437,7 @@ class ClassificationModel:
                     **extra_metrics,
                 }
 
-        return training_progress_scores
+        return training_progress_scores"""
 
     def save_model(
         self, output_dir=None, optimizer=None, scheduler=None, model=None, results=None

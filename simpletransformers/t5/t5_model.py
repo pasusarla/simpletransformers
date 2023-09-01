@@ -13,7 +13,7 @@ from accelerate import Accelerator
 import numpy as np
 import pandas as pd
 import torch
-from tensorboardX import SummaryWriter
+from torch.utils.tensorboard import SummaryWriter
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader, Dataset, RandomSampler, SequentialSampler
 from torch.utils.data.distributed import DistributedSampler
@@ -27,8 +27,10 @@ from transformers.optimization import (
     get_cosine_with_hard_restarts_schedule_with_warmup,
     get_polynomial_decay_schedule_with_warmup,
 )
-from transformers.optimization import AdamW, Adafactor
+from torch.optim import AdamW
+from transformers.optimization import Adafactor
 from transformers.models.mt5 import MT5Config, MT5ForConditionalGeneration
+from transformers.models.byt5 import ByT5Tokenizer
 
 from simpletransformers.config.global_args import global_args
 from simpletransformers.config.model_args import T5Args
@@ -54,6 +56,7 @@ def chunks(lst, n):
 MODEL_CLASSES = {
     "t5": (T5Config, T5ForConditionalGeneration),
     "mt5": (MT5Config, MT5ForConditionalGeneration),
+    "byt5": (T5Config, T5ForConditionalGeneration),
 }
 
 
@@ -73,7 +76,7 @@ class T5Model:
         Initializes a T5Model model.
 
         Args:
-            model_type: The type of model (t5, mt5)
+            model_type: The type of model (t5, mt5, byt5)
             model_name: The exact architecture and trained weights to use. This may be a Hugging Face Transformers compatible pre-trained model, a community model, or the path to a directory containing model files.
             args (optional): Default args will be used if this parameter is not provided. If provided, it should be a dict containing the args that should be changed in the default args.
             use_cuda (optional): Use GPU if available. Setting to False will force model to use CPU only.
@@ -132,6 +135,8 @@ class T5Model:
         if isinstance(tokenizer, T5Tokenizer):
             self.tokenizer = tokenizer
             self.model.resize_token_embeddings(len(self.tokenizer))
+        elif model_type == "byt5":
+            self.tokenizer = ByT5Tokenizer.from_pretrained(model_name, truncate=True)
         else:
             self.tokenizer = T5Tokenizer.from_pretrained(model_name, truncate=True)
 
@@ -262,7 +267,7 @@ class T5Model:
         args = self.args
         device = self.device
 
-        tb_writer = SummaryWriter(logdir=args.tensorboard_dir)
+        tb_writer = SummaryWriter(log_dir=args.tensorboard_dir)
         train_sampler = RandomSampler(train_dataset)
         train_dataloader = DataLoader(
             train_dataset,
@@ -353,6 +358,7 @@ class T5Model:
                 optimizer_grouped_parameters,
                 lr=args.learning_rate,
                 eps=args.adam_epsilon,
+                betas=args.adam_betas,
             )
         elif args.optimizer == "Adafactor":
             optimizer = Adafactor(
@@ -367,7 +373,7 @@ class T5Model:
                 relative_step=args.adafactor_relative_step,
                 warmup_init=args.adafactor_warmup_init,
             )
-            print("Using Adafactor for T5")
+
         else:
             raise ValueError(
                 "{} is not a valid optimizer class. Please use one of ('AdamW', 'Adafactor') instead.".format(
@@ -487,10 +493,12 @@ class T5Model:
         if args.wandb_project:
             wandb.init(
                 project=args.wandb_project,
-                config={**asdict(args), "repo": "simpletransformers"},
+                config={**asdict(args)},
                 **args.wandb_kwargs,
             )
+            wandb.run._label(repo="simpletransformers")
             wandb.watch(self.model)
+            self.wandb_run_id = wandb.run.id
 
         if args.fp16:
             from torch.cuda import amp
@@ -607,9 +615,12 @@ class T5Model:
                             **kwargs,
                         )
                         for key, value in results.items():
-                            tb_writer.add_scalar(
-                                "eval_{}".format(key), value, global_step
-                            )
+                            try:
+                                tb_writer.add_scalar(
+                                    "eval_{}".format(key), value, global_step
+                                )
+                            except (NotImplementedError, AssertionError):
+                                pass
 
                         output_dir_current = os.path.join(
                             output_dir, "checkpoint-{}".format(global_step)
@@ -921,20 +932,25 @@ class T5Model:
                 to_predict = [
                     prefix + ": " + input_text
                     for prefix, input_text in zip(
-                        eval_data["prefix"], eval_data["input_text"]
+                        eval_dataset["prefix"], eval_dataset["input_text"]
                     )
                 ]
             else:
                 to_predict = [
                     prefix + input_text
                     for prefix, input_text in zip(
-                        eval_data["prefix"], eval_data["input_text"]
+                        eval_dataset["prefix"], eval_dataset["input_text"]
                     )
                 ]
             preds = self.predict(to_predict)
 
+            if self.args.use_hf_datasets:
+                target_text = eval_dataset["target_text"]
+            else:
+                target_text = eval_dataset["target_text"].tolist()
+
             result = self.compute_metrics(
-                eval_data["target_text"].tolist(), preds, **kwargs
+                target_text, preds, **kwargs
             )
             self.results.update(result)
 
@@ -1171,7 +1187,12 @@ class T5Model:
             CustomDataset = args.dataset_class
             return CustomDataset(tokenizer, args, data, mode)
         else:
-            return T5Dataset(tokenizer, self.args, data, mode,)
+            return T5Dataset(
+                tokenizer,
+                self.args,
+                data,
+                mode,
+            )
 
     def _create_training_progress_scores(self, **kwargs):
         extra_metrics = {key: [] for key in kwargs}

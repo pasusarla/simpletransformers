@@ -13,16 +13,27 @@ from transformers import (
     BertConfig,
     BertTokenizer,
     BertweetTokenizer,
+    BigBirdConfig,
+    BigBirdTokenizer,
     CamembertConfig,
     CamembertTokenizer,
     DistilBertConfig,
     DistilBertTokenizer,
     ElectraConfig,
     ElectraTokenizer,
+    HerbertTokenizer,
     FlaubertConfig,
     FlaubertTokenizer,
+    LayoutLMConfig,
+    LayoutLMTokenizerFast,
     LongformerConfig,
     LongformerTokenizer,
+    NystromformerConfig,
+    # NystromformerTokenizer,
+    NystromformerForSequenceClassification,
+    RemBertConfig,
+    RemBertForSequenceClassification,
+    RemBertTokenizer,
     RobertaConfig,
     RobertaTokenizer,
     XLMConfig,
@@ -41,11 +52,15 @@ from simpletransformers.custom_models.models import (
     AlbertForMultiLabelSequenceClassification,
     BertForMultiLabelSequenceClassification,
     BertweetForMultiLabelSequenceClassification,
+    BigBirdForMultiLabelSequenceClassification,
     CamembertForMultiLabelSequenceClassification,
     DistilBertForMultiLabelSequenceClassification,
     ElectraForMultiLabelSequenceClassification,
     FlaubertForMultiLabelSequenceClassification,
+    LayoutLMForMultiLabelSequenceClassification,
     LongformerForMultiLabelSequenceClassification,
+    NystromformerForMultiLabelSequenceClassification,
+    RemBertForMultiLabelSequenceClassification,
     RobertaForMultiLabelSequenceClassification,
     XLMForMultiLabelSequenceClassification,
     XLMRobertaForMultiLabelSequenceClassification,
@@ -105,6 +120,11 @@ class MultiLabelClassificationModel(ClassificationModel):
                 BertweetForMultiLabelSequenceClassification,
                 BertweetTokenizer,
             ),
+            "bigbird": (
+                BigBirdConfig,
+                BigBirdForMultiLabelSequenceClassification,
+                BigBirdTokenizer,
+            ),
             "camembert": (
                 CamembertConfig,
                 CamembertForMultiLabelSequenceClassification,
@@ -120,15 +140,35 @@ class MultiLabelClassificationModel(ClassificationModel):
                 ElectraForMultiLabelSequenceClassification,
                 ElectraTokenizer,
             ),
+            "herbert": (
+                BertConfig,
+                BertForMultiLabelSequenceClassification,
+                HerbertTokenizer,
+            ),
             "flaubert": (
                 FlaubertConfig,
                 FlaubertForMultiLabelSequenceClassification,
                 FlaubertTokenizer,
             ),
+            "layoutlm": (
+                LayoutLMConfig,
+                LayoutLMForMultiLabelSequenceClassification,
+                LayoutLMTokenizerFast,
+            ),
             "longformer": (
                 LongformerConfig,
                 LongformerForMultiLabelSequenceClassification,
                 LongformerTokenizer,
+            ),
+            "nystromformer": (
+                NystromformerConfig,
+                NystromformerForMultiLabelSequenceClassification,
+                BigBirdTokenizer,
+            ),
+            "rembert": (
+                RemBertConfig,
+                RemBertForMultiLabelSequenceClassification,
+                RemBertTokenizer,
             ),
             "roberta": (
                 RobertaConfig,
@@ -186,6 +226,7 @@ class MultiLabelClassificationModel(ClassificationModel):
             self.config = config_class.from_pretrained(model_name, **self.args.config)
             self.num_labels = self.config.num_labels
         self.pos_weight = pos_weight
+        self.loss_fct = None
 
         if use_cuda:
             if torch.cuda.is_available():
